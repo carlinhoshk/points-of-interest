@@ -15,11 +15,11 @@ import lombok.Setter;
 @NoArgsConstructor
 public class Poi {
     @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     private String nome;
-    @PositiveOrZero
+    @PositiveOrZero(message = "Coordernada nao pode ser negativo")
     private int coord_x;
-    @PositiveOrZero
+    @PositiveOrZero(message = "Coordernada nao pode ser negativo")
     private int coord_y;
 }
