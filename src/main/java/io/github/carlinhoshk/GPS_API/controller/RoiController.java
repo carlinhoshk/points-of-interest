@@ -29,4 +29,22 @@ public class RoiController {
         Poi saved = poiService.savePoi(poi);
         return ResponseEntity.status(HttpStatus.CREATED).body(saved);
     }
+
+    @GetMapping("/listar_pois_d")
+    public List<Poi> listarPoisDmax(
+            @RequestParam int x,
+            @RequestParam int y,
+            @RequestParam int dmax
+    ){
+        return poiService.getPoisByProximity(x, y, dmax);
+    }
+
+    @GetMapping("/listar_poisd")
+    public List<Poi> listarPoisDist(
+            @RequestParam int x,
+            @RequestParam int y,
+            @RequestParam int dmax
+    ){
+        return poiService.getPoisByDistance(x, y, dmax);
+    }
 }
