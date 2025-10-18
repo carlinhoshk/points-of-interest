@@ -32,28 +32,31 @@ jobs:
           
           ITEM_ID=$(echo "$RESULT" | jq -r '.data.addProjectV2ItemById.item.id')
           echo "item_id=$ITEM_ID" >> $GITHUB_OUTPUT
-          echo " Issue adicionada! Item ID: $ITEM_ID"
+          echo "Issue adicionada! Item ID: $ITEM_ID"
 
-      - name: Definir status (opcional)
-        if: ${{ secrets.PROJECT_V2_STATUS_FIELD_ID && secrets.PROJECT_V2_STATUS_OPTION_ID }}
+      - name: Definir status
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PROJECT_ID: ${{ secrets.PROJECT_V2_ID }}
           ITEM_ID: ${{ steps.add_item.outputs.item_id }}
           FIELD_ID: ${{ secrets.PROJECT_V2_STATUS_FIELD_ID }}
           OPTION_ID: ${{ secrets.PROJECT_V2_STATUS_OPTION_ID }}
         run: |
-          gh api graphql -f query='
-            mutation($item:ID!, $field:ID!, $option:String!) {
-              updateProjectV2ItemFieldValue(input: {
-                itemId: $item
-                fieldId: $field
-                value: {singleSelectOptionId: $option}
-              }) {
-                projectV2Item {
-                  id
+          # Só executa se os secrets estiverem configurados
+          if [ -n "$FIELD_ID" ] && [ -n "$OPTION_ID" ]; then
+            gh api graphql -f query='
+              mutation($item:ID!, $field:ID!, $option:String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  itemId: $item
+                  fieldId: $field
+                  value: {singleSelectOptionId: $option}
+                }) {
+                  projectV2Item {
+                    id
+                  }
                 }
-              }
-            }' -f item="$ITEM_ID" -f field="$FIELD_ID" -f option="$OPTION_ID"
-          
-          echo " Status definido com sucesso!"
+              }' -f item="$ITEM_ID" -f field="$FIELD_ID" -f option="$OPTION_ID"
+            
+            echo "Status definido com sucesso!"
+          else
+            echo "FIELD_ID ou OPTION_ID não configurados - pulando definição de status"
+          fi
