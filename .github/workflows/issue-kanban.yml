@@ -1,7 +1,6 @@
 name: issue-kanban
 
 # Adiciona issues no GitHub Projects v2 e define status
-
 on:
   issues:
     types: [opened]
