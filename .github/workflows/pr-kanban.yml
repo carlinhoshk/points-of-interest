@@ -1,0 +1,82 @@
+name: pr-kanban
+
+# Atualiza o card no GitHub Projects v2 quando um Pull Request muda de estado
+# Define um campo single-select (status) com opções distintas para opened/merged/closed
+
+on:
+  pull_request:
+    types: [opened, reopened, closed]
+
+jobs:
+  update-project-item:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preparar variáveis
+        id: vars
+        run: |
+          echo "TITLE=${{ github.event.pull_request.title || '' }}" >> $GITHUB_OUTPUT
+          echo "BODY=${{ github.event.pull_request.body || '' }}" >> $GITHUB_OUTPUT
+          echo "CONTENT_ID=${{ github.event.pull_request.node_id || '' }}" >> $GITHUB_OUTPUT
+          echo "ACTION=${{ github.event.action || '' }}" >> $GITHUB_OUTPUT
+          echo "MERGED=${{ github.event.pull_request.merged || false }}" >> $GITHUB_OUTPUT
+
+      - name: Validar entrada
+        if: ${{ !secrets.PROJECT_V2_ID }}
+        run: |
+          echo "PROJECT_V2_ID não configurado — pulando"
+          exit 0
+
+      - name: Escolher optionId conforme evento
+        id: choose
+        run: |
+          ACTION=${{ steps.vars.outputs.ACTION }}
+          MERGED=${{ steps.vars.outputs.MERGED }}
+          # Você deve fornecer via secrets os option ids para cada estado
+          OPEN_OPT=${{ secrets.PR_OPEN_OPTION_ID }}
+          MERGED_OPT=${{ secrets.PR_MERGED_OPTION_ID }}
+          CLOSED_OPT=${{ secrets.PR_CLOSED_OPTION_ID }}
+
+          # Default: use OPEN_OPT
+          CHOSEN="$OPEN_OPT"
+          if [ "$ACTION" = "closed" ] && [ "$MERGED" = "true" ]; then
+            CHOSEN="$MERGED_OPT"
+          elif [ "$ACTION" = "closed" ]; then
+            CHOSEN="$CLOSED_OPT"
+          fi
+
+          echo "CHOSE=$CHOSEN" >> $GITHUB_OUTPUT
+
+      - name: Atualizar campo status no Project v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_V2_ID: ${{ secrets.PROJECT_V2_ID }}
+          FIELD_ID: ${{ secrets.PROJECT_V2_STATUS_FIELD_ID }}
+          OPTION_ID: ${{ steps.choose.outputs.CHOSE }}
+          CONTENT_ID: ${{ steps.vars.outputs.CONTENT_ID }}
+        run: |
+          if [ -z "$CONTENT_ID" ]; then
+            echo "CONTENT_ID (node_id do PR) não encontrado — pulando"
+            exit 0
+          fi
+
+          if [ -z "$FIELD_ID" ] || [ -z "$OPTION_ID" ]; then
+            echo "FIELD_ID ou OPTION_ID não configurado — precisa dos secrets PROJECT_V2_STATUS_FIELD_ID e PR_*_OPTION_ID"
+            exit 0
+          fi
+
+          # Encontrar item do projeto pelo contentId via GraphQL: pesquisar o ProjectV2 e filtrar items pelo content->contentNode
+          # A maneira mais direta é usar a query addProjectV2Item na criação (que liga contentId), mas para atualização buscamos o item
+          QUERY='query($projectId: ID!, $contentId: ID!) { node(id: $projectId) { ... on ProjectV2 { items(first: 50, filterBy: {contentIds: [$contentId]}) { nodes { id } } } } }'
+          PAYLOAD=$(jq -n --arg query "$QUERY" --arg projectId "$PROJECT_V2_ID" --arg contentId "$CONTENT_ID" '{query: $query, variables: {projectId: $projectId, contentId: $contentId}}')
+          RESP=$(curl -s -X POST -H "Authorization: bearer $GITHUB_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD" https://api.github.com/graphql)
+          ITEM_ID=$(echo "$RESP" | jq -r '.data.node.items.nodes[0].id')
+
+          if [ "$ITEM_ID" = "null" ] || [ -z "$ITEM_ID" ]; then
+            echo "Item do Project não encontrado para contentId — pulando"
+            echo "$RESP" | jq -r '.'
+            exit 0
+          fi
+
+          MUT='mutation($itemId: ID!, $fieldId: ID!, $optionId: String!) { updateProjectV2ItemFieldValue(input: {itemId: $itemId, fieldId: $fieldId, value: {singleSelectOptionId: $optionId}}) { item { id } } }'
+          PAYLOAD=$(jq -n --arg query "$MUT" --arg itemId "$ITEM_ID" --arg fieldId "$FIELD_ID" --arg optionId "$OPTION_ID" '{query: $query, variables: {itemId: $itemId, fieldId: $fieldId, optionId: $optionId}}')
+          curl -s -X POST -H "Authorization: bearer $GITHUB_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD" https://api.github.com/graphql | jq -r '.'

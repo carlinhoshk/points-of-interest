@@ -1,0 +1,80 @@
+name: issue-kanban
+
+# Cria um item no GitHub Projects v2 quando uma Issue é aberta
+# Usa GraphQL API para adicionar o item e opcionalmente atualizar um campo single-select
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  create-project-item:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preparar variáveis
+        id: vars
+        run: |
+          echo "TITLE=${{ github.event.issue.title || '' }}" >> $GITHUB_OUTPUT
+          echo "BODY=${{ github.event.issue.body || '' }}" >> $GITHUB_OUTPUT
+          echo "URL=${{ github.event.issue.html_url || '' }}" >> $GITHUB_OUTPUT
+          echo "CONTENT_ID=${{ github.event.issue.node_id || '' }}" >> $GITHUB_OUTPUT
+
+      - name: Criar/ligar item no Project v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_V2_ID: ${{ secrets.PROJECT_V2_ID }}
+          # Opcional: ID do campo single-select (status) no Project v2
+          PROJECT_V2_STATUS_FIELD_ID: ${{ secrets.PROJECT_V2_STATUS_FIELD_ID || '' }}
+          # Opcional: ID da opção single-select para definir ao criar o card
+          PROJECT_V2_STATUS_OPTION_ID: ${{ secrets.PROJECT_V2_STATUS_OPTION_ID || '' }}
+          TITLE: ${{ steps.vars.outputs.TITLE }}
+          BODY: ${{ steps.vars.outputs.BODY }}
+          CONTENT_ID: ${{ steps.vars.outputs.CONTENT_ID }}
+        run: |
+          if [ -z "$PROJECT_V2_ID" ]; then
+            echo "PROJECT_V2_ID não configurado — pulando criação de item no Project v2"
+            exit 0
+          fi
+
+          # Se temos content id (node_id) da issue, tente criar o item vinculado
+          if [ -n "$CONTENT_ID" ]; then
+            QUERY='mutation($projectId: ID!, $contentId: ID!) { addProjectV2Item(input: {projectId: $projectId, contentId: $contentId}) { item { id } } }'
+            PAYLOAD=$(jq -n --arg query "$QUERY" --arg projectId "$PROJECT_V2_ID" --arg contentId "$CONTENT_ID" '{query: $query, variables: {projectId: $projectId, contentId: $contentId}}')
+            RESP=$(curl -s -X POST -H "Authorization: bearer $GITHUB_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD" https://api.github.com/graphql)
+            echo "$RESP" | jq -r '.'
+          else
+            # fallback: criar item sem vínculo, usando título
+            QUERY='mutation($projectId: ID!, $title: String!) { addProjectV2Item(input: {projectId: $projectId, content: {title: $title}}) { item { id } } }'
+            PAYLOAD=$(jq -n --arg query "$QUERY" --arg projectId "$PROJECT_V2_ID" --arg title "$TITLE" '{query: $query, variables: {projectId: $projectId, title: $title}}')
+            RESP=$(curl -s -X POST -H "Authorization: bearer $GITHUB_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD" https://api.github.com/graphql)
+            echo "$RESP" | jq -r '.'
+          fi
+
+      - name: Definir status (opcional)
+        if: ${{ secrets.PROJECT_V2_STATUS_FIELD_ID && secrets.PROJECT_V2_STATUS_OPTION_ID }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_V2_ID: ${{ secrets.PROJECT_V2_ID }}
+          PROJECT_V2_STATUS_FIELD_ID: ${{ secrets.PROJECT_V2_STATUS_FIELD_ID }}
+          PROJECT_V2_STATUS_OPTION_ID: ${{ secrets.PROJECT_V2_STATUS_OPTION_ID }}
+          TITLE: ${{ steps.vars.outputs.TITLE }}
+        run: |
+          # Este passo assume que o item já foi criado e ligado à Issue.
+          # Para encontrar o item id, pesquisamos itens do projeto filtrando por título.
+          # Em repositórios grandes você pode preferir armazenar o item id no comentário ou usar a query de content -> item.
+
+          # Buscar item por título (atenção a duplicatas)
+          QUERY='query($projectId: ID!, $search: String!) { node(id: $projectId) { ... on ProjectV2 { items(first: 50, filterBy: {search: $search}) { nodes { id } } } } }'
+          PAYLOAD=$(jq -n --arg query "$QUERY" --arg projectId "$PROJECT_V2_ID" --arg search "$TITLE" '{query: $query, variables: {projectId: $projectId, search: $search}}')
+          ITEMS=$(curl -s -X POST -H "Authorization: bearer $GITHUB_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD" https://api.github.com/graphql)
+          ITEM_ID=$(echo "$ITEMS" | jq -r '.data.node.items.nodes[0].id')
+
+          if [ "$ITEM_ID" = "null" ] || [ -z "$ITEM_ID" ]; then
+            echo "Item do Project não encontrado — pulando atualização de campo"
+            exit 0
+          fi
+
+          # Atualizar um campo single-select no item
+          MUT='mutation($itemId: ID!, $fieldId: ID!, $optionId: String!) { updateProjectV2ItemFieldValue(input: {itemId: $itemId, fieldId: $fieldId, value: {singleSelectOptionId: $optionId}}) { item { id } } }'
+          PAYLOAD=$(jq -n --arg query "$MUT" --arg itemId "$ITEM_ID" --arg fieldId "$PROJECT_V2_STATUS_FIELD_ID" --arg optionId "$PROJECT_V2_STATUS_OPTION_ID" '{query: $query, variables: {itemId: $itemId, fieldId: $fieldId, optionId: $optionId}}')
+          curl -s -X POST -H "Authorization: bearer $GITHUB_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD" https://api.github.com/graphql | jq -r '.'
